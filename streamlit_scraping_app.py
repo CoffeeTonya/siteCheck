@@ -723,22 +723,25 @@ def main():
         
         # 取得できなかった商品リストを表示
         if st.session_state.sale_list is not None:
-            # 取得できた商品コードのリスト（拡張コードのみ）
-            found_codes = set()
+            # 取得できた商品コードのリスト（拡張コードから元のコードを抽出）
+            found_original_codes = set()
             for code in st.session_state.df_rakuten['itemCode'].astype(str):
-                # 拡張コード（-50, -100, -200等）のみを対象とする
+                # 拡張コード（-50, -100, -200等）から元のコードを抽出
                 if '-' in code:
-                    found_codes.add(code)
+                    original_code = code.split('-')[0]
+                    found_original_codes.add(original_code)
+                else:
+                    found_original_codes.add(code)
             
-            # 元のsale_listから大分類コード1,2の商品を除外して取得できなかった商品を抽出
+            # 元のsale_listから取得できなかった商品を抽出
             # 大分類コード1,2は変換前の商品コードなので取得対象外
             target_sale_list = st.session_state.sale_list[
                 ~st.session_state.sale_list['大分類コード'].isin([1, 2])
             ]
             
-            # 大分類コード1,2以外で取得できなかった商品を抽出
+            # 取得できなかった商品を抽出（取得できた元のコードを除外）
             not_found_df = target_sale_list[
-                ~target_sale_list['商品コード'].astype(str).isin(found_codes)
+                ~target_sale_list['商品コード'].astype(str).isin(found_original_codes)
             ]
             
             if not not_found_df.empty:
@@ -785,22 +788,25 @@ def main():
         
         # 取得できなかった商品リストを表示
         if st.session_state.sale_list is not None:
-            # 取得できた商品コードのリスト（拡張コードのみ）
-            found_codes = set()
+            # 取得できた商品コードのリスト（拡張コードから元のコードを抽出）
+            found_original_codes = set()
             for code in st.session_state.df_yahoo['itemCode'].astype(str):
-                # 拡張コード（-50, -100, -200等）のみを対象とする
+                # 拡張コード（-50, -100, -200等）から元のコードを抽出
                 if '-' in code:
-                    found_codes.add(code)
+                    original_code = code.split('-')[0]
+                    found_original_codes.add(original_code)
+                else:
+                    found_original_codes.add(code)
             
-            # 元のsale_listから大分類コード1,2の商品を除外して取得できなかった商品を抽出
+            # 元のsale_listから取得できなかった商品を抽出
             # 大分類コード1,2は変換前の商品コードなので取得対象外
             target_sale_list = st.session_state.sale_list[
                 ~st.session_state.sale_list['大分類コード'].isin([1, 2])
             ]
             
-            # 大分類コード1,2以外で取得できなかった商品を抽出
+            # 取得できなかった商品を抽出（取得できた元のコードを除外）
             not_found_df = target_sale_list[
-                ~target_sale_list['商品コード'].astype(str).isin(found_codes)
+                ~target_sale_list['商品コード'].astype(str).isin(found_original_codes)
             ]
             
             if not not_found_df.empty:
