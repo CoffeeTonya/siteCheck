@@ -362,7 +362,13 @@ def main():
         st.markdown("---")
         st.subheader("📊 自社サイト取得結果")
         st.success("スクレイピングが完了しました！")
-        st.dataframe(st.session_state.df_onlinestore)
+        
+        # 高さを指定してデータフレームを表示
+        st.dataframe(
+            st.session_state.df_onlinestore,
+            use_container_width=True,
+            height=600
+        )
         
         # ダウンロードボタン
         csv_data = st.session_state.df_onlinestore.to_csv(index=False, encoding='utf-8-sig')
@@ -377,7 +383,13 @@ def main():
         st.markdown("---")
         st.subheader("📊 楽天市場取得結果")
         st.success("楽天市場API取得が完了しました！")
-        st.dataframe(st.session_state.df_rakuten)
+        
+        # 高さを指定してデータフレームを表示
+        st.dataframe(
+            st.session_state.df_rakuten,
+            use_container_width=True,
+            height=800
+        )
         
         # ダウンロードボタン
         csv_data = st.session_state.df_rakuten.to_csv(index=False, encoding='utf-8-sig')
