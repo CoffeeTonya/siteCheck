@@ -206,12 +206,20 @@ def get_rakuten_data(sale_list):
     for _, row in cat1.iterrows():
         code = str(row['商品コード'])
         
-        # 販売単価1-5の値を取得
-        sale_price1 = row.get('販売単価1', 0)
-        sale_price2 = row.get('販売単価2', 0)
-        sale_price3 = row.get('販売単価3', 0)
-        sale_price4 = row.get('販売単価4', 0)
-        sale_price5 = row.get('販売単価5', 0)
+        # 販売単価1-5の値を安全に取得
+        def safe_get_price(price_value):
+            try:
+                if pd.isna(price_value) or price_value == '' or price_value is None:
+                    return 0
+                return float(str(price_value).replace(',', ''))
+            except (ValueError, TypeError):
+                return 0
+        
+        sale_price1 = safe_get_price(row.get('販売単価1', 0))
+        sale_price2 = safe_get_price(row.get('販売単価2', 0))
+        sale_price3 = safe_get_price(row.get('販売単価3', 0))
+        sale_price4 = safe_get_price(row.get('販売単価4', 0))
+        sale_price5 = safe_get_price(row.get('販売単価5', 0))
         
         # 販売単価1-5が0でない場合の計算
         if sale_price1 > 0 or sale_price2 > 0 or sale_price3 > 0 or sale_price4 > 0 or sale_price5 > 0:
