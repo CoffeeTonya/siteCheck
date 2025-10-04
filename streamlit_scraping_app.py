@@ -24,6 +24,8 @@ if 'df_rakuten' not in st.session_state:
     st.session_state.df_rakuten = None
 if 'sale_list' not in st.session_state:
     st.session_state.sale_list = None
+if 'selected_data_source' not in st.session_state:
+    st.session_state.selected_data_source = "自社サイトスクレイピング"
 
 # タイトル
 st.title("📊 商品データ取得ツール")
@@ -157,13 +159,13 @@ def scrape_own_site(sale_list):
     # データフレーム化
     df_onlinestore = pd.DataFrame(onlinestore_data)
     
-    # salelistの「商品コード」と「通販単価」をdf_onlinestoreにNoで紐づけて追加し、差額列も追加
-    salelist_renamed = sale_list.rename(columns={'商品コード': 'No', '通販単価': '通販単価'})
+    # salelistの「商品コード」「通販単価」「送料区分名」をdf_onlinestoreにNoで紐づけて追加し、差額列も追加
+    salelist_renamed = sale_list.rename(columns={'商品コード': 'No', '通販単価': '通販単価', '送料区分名': '送料区分名'})
     df_onlinestore['No'] = df_onlinestore['No'].astype(str)
     salelist_renamed['No'] = salelist_renamed['No'].astype(str)
 
-    # 通販単価を追加
-    df_onlinestore = pd.merge(df_onlinestore, salelist_renamed[['No', '通販単価']], on='No', how='left')
+    # 通販単価と送料区分名を追加
+    df_onlinestore = pd.merge(df_onlinestore, salelist_renamed[['No', '通販単価', '送料区分名']], on='No', how='left')
 
     # 通販単価もカンマ区切りの文字列に変換
     df_onlinestore['通販単価'] = df_onlinestore['通販単価'].apply(
@@ -203,11 +205,54 @@ def get_rakuten_data(sale_list):
     rows = []
     for _, row in cat1.iterrows():
         code = str(row['商品コード'])
-        for i, suf in enumerate(['-100', '-200', '-300', '-400', '-500'], 1):
+        
+        # 販売単価1-5の値を取得
+        sale_price1 = row.get('販売単価1', 0)
+        sale_price2 = row.get('販売単価2', 0)
+        sale_price3 = row.get('販売単価3', 0)
+        sale_price4 = row.get('販売単価4', 0)
+        sale_price5 = row.get('販売単価5', 0)
+        
+        # 販売単価1-5が0でない場合の計算
+        if sale_price1 > 0 or sale_price2 > 0 or sale_price3 > 0 or sale_price4 > 0 or sale_price5 > 0:
+            # -50と-100は販売単価1
+            for suf in ['-50', '-100']:
+                r = row.copy()
+                r['商品コード'] = code + suf
+                r['通販単価'] = float(str(sale_price1).replace(',', '')) if sale_price1 > 0 else np.nan
+                rows.append(r)
+            
+            # -200は販売単価2×2
             r = row.copy()
-            r['商品コード'] = code + suf
-            r['通販単価'] = float(str(row['通販単価']).replace(',', '')) * i if row['通販単価'] else np.nan
+            r['商品コード'] = code + '-200'
+            r['通販単価'] = float(str(sale_price2).replace(',', '')) * 2 if sale_price2 > 0 else np.nan
             rows.append(r)
+            
+            # -300は販売単価3×3
+            r = row.copy()
+            r['商品コード'] = code + '-300'
+            r['通販単価'] = float(str(sale_price3).replace(',', '')) * 3 if sale_price3 > 0 else np.nan
+            rows.append(r)
+            
+            # -400は販売単価4×4
+            r = row.copy()
+            r['商品コード'] = code + '-400'
+            r['通販単価'] = float(str(sale_price4).replace(',', '')) * 4 if sale_price4 > 0 else np.nan
+            rows.append(r)
+            
+            # -500は販売単価5×5
+            r = row.copy()
+            r['商品コード'] = code + '-500'
+            r['通販単価'] = float(str(sale_price5).replace(',', '')) * 5 if sale_price5 > 0 else np.nan
+            rows.append(r)
+        else:
+            # 従来の計算方法（販売単価1-5がすべて0の場合）
+            for i, suf in enumerate(['-100', '-200', '-300', '-400', '-500'], 1):
+                r = row.copy()
+                r['商品コード'] = code + suf
+                r['通販単価'] = float(str(row['通販単価']).replace(',', '')) * i if row['通販単価'] else np.nan
+                rows.append(r)
+    
     for _, row in cat2.iterrows():
         code = str(row['商品コード'])
         r = row.copy()
@@ -304,8 +349,12 @@ def render_sidebar():
         data_source = st.sidebar.radio(
             "取得するデータを選択：",
             ["自社サイトスクレイピング", "楽天市場API取得"],
-            index=0
+            index=0 if st.session_state.selected_data_source == "自社サイトスクレイピング" else 1,
+            key="data_source_radio"
         )
+        
+        # セッション状態に選択を保存
+        st.session_state.selected_data_source = data_source
         
         st.sidebar.markdown("---")
         
@@ -357,8 +406,8 @@ def main():
     # サイドバーを表示（CSV読み込み後に実行）
     render_sidebar()
 
-    # 結果表示
-    if st.session_state.df_onlinestore is not None:
+    # 結果表示（選択されたデータソースのみ表示）
+    if st.session_state.selected_data_source == "自社サイトスクレイピング" and st.session_state.df_onlinestore is not None:
         st.markdown("---")
         st.subheader("📊 自社サイト取得結果")
         st.success("スクレイピングが完了しました！")
@@ -379,7 +428,7 @@ def main():
             mime="text/csv"
         )
     
-    if st.session_state.df_rakuten is not None:
+    elif st.session_state.selected_data_source == "楽天市場API取得" and st.session_state.df_rakuten is not None:
         st.markdown("---")
         st.subheader("📊 楽天市場取得結果")
         st.success("楽天市場API取得が完了しました！")
