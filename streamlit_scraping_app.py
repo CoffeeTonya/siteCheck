@@ -183,6 +183,10 @@ def scrape_own_site(sale_list):
 
     df_onlinestore['差額'] = df_onlinestore.apply(calc_diff, axis=1)
     
+    # 列の順序を指定（通販単価、差額、送料区分名の順に）
+    column_order = ['No', 'Name', 'Price', 'Point', 'Stock', 'Icon', '通販単価', '差額', '送料区分名']
+    df_onlinestore = df_onlinestore[column_order]
+    
     # プログレスバーを完了
     progress_bar.progress(1.0)
     status_text.text("スクレイピング完了！")
