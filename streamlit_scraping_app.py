@@ -642,6 +642,7 @@ def main():
         type=['csv'],
         help="商品データが含まれたCSVファイルをアップロードしてください"
     )
+    st.text('汎用明細表：M04/シリーズ商品マスタ')
     
     if uploaded_file is not None:
         # CSVファイルを読み込み
@@ -865,3 +866,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
