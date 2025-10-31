@@ -302,7 +302,7 @@ def get_rakuten_data(sale_list):
             "orFlag": 0,
             "hasReviewFlag": 0,
             "applicationId": APP_ID,
-            "availability": 1,
+            "availability": 0,
             "hits": 30,
             "page": 1,
             'sort': '+itemPrice',
@@ -866,4 +866,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
