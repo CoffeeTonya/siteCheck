@@ -781,15 +781,23 @@ def main():
                 else:
                     not_found_df['取得失敗理由'] = "理由不明"
                 
+                # 商品コード、商品名、取得失敗理由のみを抽出
+                display_columns = ['商品コード', '商品名', '取得失敗理由']
+                # 商品名の列が存在するか確認
+                if '商品名' not in not_found_df.columns:
+                    # 商品名の列がない場合は空の列を追加
+                    not_found_df['商品名'] = ''
+                not_found_display_df = not_found_df[display_columns].copy()
+                
                 # 取得できなかった商品を表示
                 st.dataframe(
-                    not_found_df,
+                    not_found_display_df,
                     use_container_width=True,
                     height=400
                 )
                 
                 # 取得できなかった商品のダウンロードボタン
-                csv_data_not_found = not_found_df.to_csv(index=False, encoding='utf-8-sig')
+                csv_data_not_found = not_found_display_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="取得できなかった商品データをダウンロード",
                     data=csv_data_not_found,
@@ -864,18 +872,21 @@ def main():
             other_codes = {code for code in found_codes if '-' not in code}
             
             # 元のsale_listから取得できなかった商品を抽出
+            # 大分類コード1と2の商品は拡張コードで取得されるため、すべての拡張コードが取得できなかった場合のみリストに含める
             not_found_list = []
             for _, row in st.session_state.sale_list.iterrows():
-                code = str(row['商品コード'])
+                code = str(row['商品コード']).strip()
                 cat_code = row['大分類コード']
                 
-                # 大分類コード1の商品は、拡張コードが1つでも取得できていればOK
+                # 大分類コード1の商品は、すべての拡張コードが取得できなかった場合のみリストに含める
                 if cat_code == 1:
                     if code not in cat1_codes:
+                        # 拡張コードで取得できなかった場合のみ追加
                         not_found_list.append(row)
-                # 大分類コード2の商品は、-50が取得できていればOK
+                # 大分類コード2の商品は、-50が取得できなかった場合のみリストに含める
                 elif cat_code == 2:
                     if code not in cat2_codes:
+                        # 拡張コードで取得できなかった場合のみ追加
                         not_found_list.append(row)
                 # その他の商品は元の商品コードで比較
                 else:
@@ -922,15 +933,23 @@ def main():
                 else:
                     not_found_df['取得失敗理由'] = "理由不明"
                 
+                # 商品コード、商品名、取得失敗理由のみを抽出
+                display_columns = ['商品コード', '商品名', '取得失敗理由']
+                # 商品名の列が存在するか確認
+                if '商品名' not in not_found_df.columns:
+                    # 商品名の列がない場合は空の列を追加
+                    not_found_df['商品名'] = ''
+                not_found_display_df = not_found_df[display_columns].copy()
+                
                 # 取得できなかった商品を表示
                 st.dataframe(
-                    not_found_df,
+                    not_found_display_df,
                     use_container_width=True,
                     height=400
                 )
                 
                 # 取得できなかった商品のダウンロードボタン
-                csv_data_not_found = not_found_df.to_csv(index=False, encoding='utf-8-sig')
+                csv_data_not_found = not_found_display_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="取得できなかった商品データをダウンロード",
                     data=csv_data_not_found,
@@ -1006,18 +1025,21 @@ def main():
             other_codes = {str(code).strip() for code in found_codes if '-' not in str(code)}
             
             # 元のsale_listから取得できなかった商品を抽出
+            # 大分類コード1と2の商品は拡張コードで取得されるため、すべての拡張コードが取得できなかった場合のみリストに含める
             not_found_list = []
             for _, row in st.session_state.sale_list.iterrows():
                 code = str(row['商品コード']).strip()
                 cat_code = row['大分類コード']
                 
-                # 大分類コード1の商品は、拡張コードが1つでも取得できていればOK
+                # 大分類コード1の商品は、すべての拡張コードが取得できなかった場合のみリストに含める
                 if cat_code == 1:
                     if code not in cat1_codes:
+                        # 拡張コードで取得できなかった場合のみ追加
                         not_found_list.append(row)
-                # 大分類コード2の商品は、-50が取得できていればOK
+                # 大分類コード2の商品は、-50が取得できなかった場合のみリストに含める
                 elif cat_code == 2:
                     if code not in cat2_codes:
+                        # 拡張コードで取得できなかった場合のみ追加
                         not_found_list.append(row)
                 # その他の商品は元の商品コードで比較（空白除去して比較）
                 else:
@@ -1064,15 +1086,23 @@ def main():
                 else:
                     not_found_df['取得失敗理由'] = "理由不明"
                 
+                # 商品コード、商品名、取得失敗理由のみを抽出
+                display_columns = ['商品コード', '商品名', '取得失敗理由']
+                # 商品名の列が存在するか確認
+                if '商品名' not in not_found_df.columns:
+                    # 商品名の列がない場合は空の列を追加
+                    not_found_df['商品名'] = ''
+                not_found_display_df = not_found_df[display_columns].copy()
+                
                 # 取得できなかった商品を表示
                 st.dataframe(
-                    not_found_df,
+                    not_found_display_df,
                     use_container_width=True,
                     height=400
                 )
                 
                 # 取得できなかった商品のダウンロードボタン
-                csv_data_not_found = not_found_df.to_csv(index=False, encoding='utf-8-sig')
+                csv_data_not_found = not_found_display_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="取得できなかった商品データをダウンロード",
                     data=csv_data_not_found,
