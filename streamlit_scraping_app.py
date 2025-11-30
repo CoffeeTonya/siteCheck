@@ -740,23 +740,73 @@ def main():
         
         # 取得できなかった商品リストを表示
         if st.session_state.sale_list is not None:
-            # 取得できた商品コードのリスト（拡張コードのみ）
-            found_codes = set()
-            for code in st.session_state.df_rakuten['itemCode'].astype(str):
-                # 拡張コード（-50, -100, -200等）のみを対象とする
+            # 取得できた商品コードのリスト（すべてのコードを含める、空白除去して正規化）
+            found_codes = {str(code).strip() for code in st.session_state.df_rakuten['itemCode'].astype(str)}
+            
+            # 大分類コード1,2の商品は拡張コードに変換されるため、元の商品コードから拡張コードを生成して比較
+            # 大分類コード1: -50, -100, -200, -300, -400, -500
+            # 大分類コード2: -50
+            cat1_codes = set()
+            cat2_codes = set()
+            # まず、各base_codeに対してどの拡張コードが存在するかを集計
+            base_code_extensions = {}
+            for code in found_codes:
                 if '-' in code:
-                    found_codes.add(code)
+                    base_code = code.split('-')[0].strip()
+                    suffix = code.split('-', 1)[1].strip() if '-' in code else ''
+                    if base_code not in base_code_extensions:
+                        base_code_extensions[base_code] = set()
+                    base_code_extensions[base_code].add(suffix)
             
-            # 元のsale_listから大分類コード1,2の商品を除外して取得できなかった商品を抽出
-            # 大分類コード1,2は変換前の商品コードなので取得対象外
-            target_sale_list = st.session_state.sale_list[
-                ~st.session_state.sale_list['大分類コード'].isin([1, 2])
-            ]
+            # 大分類コード1の商品は複数の拡張コード（-50, -100, -200等）が生成される
+            # 大分類コード2の商品は-50のみが生成される
+            for base_code, extensions in base_code_extensions.items():
+                if len(extensions) > 1 or (len(extensions) == 1 and '-50' not in extensions):
+                    # 複数の拡張コードがある、または-50以外の拡張コードがある場合は大分類コード1
+                    cat1_codes.add(base_code)
+                elif len(extensions) == 1 and '-50' in extensions:
+                    # -50のみの場合は大分類コード2の可能性が高いが、大分類コード1の可能性もある
+                    # より正確な判定のため、sale_listの大分類コードを確認
+                    matching_rows = st.session_state.sale_list[
+                        st.session_state.sale_list['商品コード'].astype(str).str.strip() == base_code
+                    ]
+                    if not matching_rows.empty:
+                        cat_code = matching_rows.iloc[0]['大分類コード']
+                        if cat_code == 2:
+                            cat2_codes.add(base_code)
+                        else:
+                            cat1_codes.add(base_code)
+                    else:
+                        # 見つからない場合は大分類コード2と仮定（-50のみなので）
+                        cat2_codes.add(base_code)
             
-            # 大分類コード1,2以外で取得できなかった商品を抽出
-            not_found_df = target_sale_list[
-                ~target_sale_list['商品コード'].astype(str).isin(found_codes)
-            ]
+            # 大分類コード1,2以外の商品は元の商品コードのまま（空白除去済み）
+            other_codes = {code for code in found_codes if '-' not in code}
+            
+            # 元のsale_listから取得できなかった商品を抽出
+            not_found_list = []
+            for _, row in st.session_state.sale_list.iterrows():
+                code = str(row['商品コード'])
+                cat_code = row['大分類コード']
+                
+                # 大分類コード1の商品は、拡張コードが1つでも取得できていればOK
+                if cat_code == 1:
+                    if code not in cat1_codes:
+                        not_found_list.append(row)
+                # 大分類コード2の商品は、-50が取得できていればOK
+                elif cat_code == 2:
+                    if code not in cat2_codes:
+                        not_found_list.append(row)
+                # その他の商品は元の商品コードで比較
+                else:
+                    if code not in other_codes:
+                        not_found_list.append(row)
+            
+            # 空のリストの場合は元のsale_listと同じカラムを持つ空のDataFrameを作成
+            if not_found_list:
+                not_found_df = pd.DataFrame(not_found_list)
+            else:
+                not_found_df = pd.DataFrame(columns=st.session_state.sale_list.columns)
             
             if not not_found_df.empty:
                 st.markdown("---")
@@ -802,23 +852,74 @@ def main():
         
         # 取得できなかった商品リストを表示
         if st.session_state.sale_list is not None:
-            # 取得できた商品コードのリスト（拡張コードのみ）
-            found_codes = set()
-            for code in st.session_state.df_yahoo['itemCode'].astype(str):
-                # 拡張コード（-50, -100, -200等）のみを対象とする
+            # 取得できた商品コードのリスト（すべてのコードを含める、空白除去して正規化）
+            found_codes = {str(code).strip() for code in st.session_state.df_yahoo['itemCode'].astype(str)}
+            
+            # 大分類コード1,2の商品は拡張コードに変換されるため、元の商品コードから拡張コードを生成して比較
+            # 大分類コード1: -50, -100, -200, -300, -400, -500
+            # 大分類コード2: -50
+            cat1_codes = set()
+            cat2_codes = set()
+            # まず、各base_codeに対してどの拡張コードが存在するかを集計
+            base_code_extensions = {}
+            for code in found_codes:
                 if '-' in code:
-                    found_codes.add(code)
+                    base_code = code.split('-')[0]
+                    suffix = code.split('-', 1)[1] if '-' in code else ''
+                    if base_code not in base_code_extensions:
+                        base_code_extensions[base_code] = set()
+                    base_code_extensions[base_code].add(suffix)
             
-            # 元のsale_listから大分類コード1,2の商品を除外して取得できなかった商品を抽出
-            # 大分類コード1,2は変換前の商品コードなので取得対象外
-            target_sale_list = st.session_state.sale_list[
-                ~st.session_state.sale_list['大分類コード'].isin([1, 2])
-            ]
+            # 大分類コード1の商品は複数の拡張コード（-50, -100, -200等）が生成される
+            # 大分類コード2の商品は-50のみが生成される
+            for base_code, extensions in base_code_extensions.items():
+                if len(extensions) > 1 or (len(extensions) == 1 and '-50' not in extensions):
+                    # 複数の拡張コードがある、または-50以外の拡張コードがある場合は大分類コード1
+                    cat1_codes.add(base_code)
+                elif len(extensions) == 1 and '-50' in extensions:
+                    # -50のみの場合は大分類コード2の可能性が高いが、大分類コード1の可能性もある
+                    # より正確な判定のため、sale_listの大分類コードを確認
+                    matching_rows = st.session_state.sale_list[
+                        st.session_state.sale_list['商品コード'].astype(str) == base_code
+                    ]
+                    if not matching_rows.empty:
+                        cat_code = matching_rows.iloc[0]['大分類コード']
+                        if cat_code == 2:
+                            cat2_codes.add(base_code)
+                        else:
+                            cat1_codes.add(base_code)
+                    else:
+                        # 見つからない場合は大分類コード2と仮定（-50のみなので）
+                        cat2_codes.add(base_code)
             
-            # 大分類コード1,2以外で取得できなかった商品を抽出
-            not_found_df = target_sale_list[
-                ~target_sale_list['商品コード'].astype(str).isin(found_codes)
-            ]
+            # 大分類コード1,2以外の商品は元の商品コードのまま
+            # 空白を除去し、文字列として正規化
+            other_codes = {str(code).strip() for code in found_codes if '-' not in str(code)}
+            
+            # 元のsale_listから取得できなかった商品を抽出
+            not_found_list = []
+            for _, row in st.session_state.sale_list.iterrows():
+                code = str(row['商品コード']).strip()
+                cat_code = row['大分類コード']
+                
+                # 大分類コード1の商品は、拡張コードが1つでも取得できていればOK
+                if cat_code == 1:
+                    if code not in cat1_codes:
+                        not_found_list.append(row)
+                # 大分類コード2の商品は、-50が取得できていればOK
+                elif cat_code == 2:
+                    if code not in cat2_codes:
+                        not_found_list.append(row)
+                # その他の商品は元の商品コードで比較（空白除去して比較）
+                else:
+                    if code not in other_codes:
+                        not_found_list.append(row)
+            
+            # 空のリストの場合は元のsale_listと同じカラムを持つ空のDataFrameを作成
+            if not_found_list:
+                not_found_df = pd.DataFrame(not_found_list)
+            else:
+                not_found_df = pd.DataFrame(columns=st.session_state.sale_list.columns)
             
             if not not_found_df.empty:
                 st.markdown("---")
