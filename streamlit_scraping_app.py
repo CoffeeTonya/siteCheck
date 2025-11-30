@@ -28,6 +28,12 @@ if 'sale_list' not in st.session_state:
     st.session_state.sale_list = None
 if 'selected_data_source' not in st.session_state:
     st.session_state.selected_data_source = "自社サイトスクレイピング"
+if 'not_found_reasons_onlinestore' not in st.session_state:
+    st.session_state.not_found_reasons_onlinestore = {}
+if 'not_found_reasons_rakuten' not in st.session_state:
+    st.session_state.not_found_reasons_rakuten = {}
+if 'not_found_reasons_yahoo' not in st.session_state:
+    st.session_state.not_found_reasons_yahoo = {}
 
 # タイトル
 st.title("📊 商品データ取得ツール")
@@ -54,6 +60,8 @@ def scrape_own_site(sale_list):
     
     # 商品情報を格納するリスト
     onlinestore_data = []
+    # 取得できなかった商品とその理由を記録
+    not_found_reasons = {}
     
     # プログレスバー
     progress_bar = st.progress(0)
@@ -70,6 +78,12 @@ def scrape_own_site(sale_list):
             
             url = f'https://www.tonya.co.jp/shop/g/g{code}'
             res = requests.get(url)
+            
+            # HTTPエラーチェック
+            if res.status_code != 200:
+                not_found_reasons[str(code)] = f"HTTPエラー: {res.status_code}"
+                continue
+            
             soup = BeautifulSoup(res.text, 'html.parser')
 
             # 各項目の初期化
@@ -85,6 +99,7 @@ def scrape_own_site(sale_list):
             # 商品詳細ブロック取得
             detail_div = soup.find('div', class_='goodsproductdetail_')
             if detail_div is None:
+                not_found_reasons[str(code)] = "商品詳細ブロックが見つかりませんでした"
                 continue
 
             # 商品コード
@@ -154,8 +169,13 @@ def scrape_own_site(sale_list):
             # 辞書をリストに追加
             onlinestore_data.append(item_dict)
 
+        except requests.exceptions.RequestException as e:
+            # リクエストエラー
+            not_found_reasons[str(code)] = f"リクエストエラー: {str(e)}"
+            continue
         except Exception as e:
-            # エラー時はスキップ
+            # その他のエラー
+            not_found_reasons[str(code)] = f"エラー: {str(e)}"
             continue
 
     # データフレーム化
@@ -192,6 +212,9 @@ def scrape_own_site(sale_list):
     # プログレスバーを完了
     progress_bar.progress(1.0)
     status_text.text("スクレイピング完了！")
+    
+    # 取得できなかった商品の理由をセッション状態に保存
+    st.session_state.not_found_reasons_onlinestore = not_found_reasons
     
     return df_onlinestore
 
@@ -282,6 +305,8 @@ def get_rakuten_data(sale_list):
 
     codes = sale_list_mod['商品コード'].astype(str).unique()
     item_list = []
+    # 取得できなかった商品とその理由を記録
+    not_found_reasons = {}
     
     # プログレスバー
     progress_bar = st.progress(0)
@@ -307,13 +332,23 @@ def get_rakuten_data(sale_list):
             "page": 1,
             'sort': '+itemPrice',
         }
+        found = False
         try:
             res = requests.get(REQUEST_URL, params=params)
+            if res.status_code != 200:
+                not_found_reasons[code] = f"HTTPエラー: {res.status_code}"
+                time.sleep(2.1)
+                continue
             result = res.json()
-        except:
-            # API制限を考慮して待機（楽天市場API: 1分30リクエスト = 2秒間隔）
+        except requests.exceptions.RequestException as e:
+            not_found_reasons[code] = f"リクエストエラー: {str(e)}"
             time.sleep(2.1)
             continue
+        except Exception as e:
+            not_found_reasons[code] = f"エラー: {str(e)}"
+            time.sleep(2.1)
+            continue
+        
         for item in result.get('Items', []):
             d = item['Item']
             url = d.get('itemUrl', '')
@@ -327,6 +362,12 @@ def get_rakuten_data(sale_list):
                     'postageFlag': "送料込" if d.get('postageFlag') == 0 else "送料別" if d.get('postageFlag') == 1 else ""
                 }
                 item_list.append(tmp)
+                found = True
+                break
+        
+        if not found:
+            not_found_reasons[code] = "APIで商品が見つかりませんでした"
+        
         # API制限を考慮して待機（楽天市場API: 1分30リクエスト = 2秒間隔）
         time.sleep(2.1)
 
@@ -351,6 +392,9 @@ def get_rakuten_data(sale_list):
     # プログレスバーを完了
     progress_bar.progress(1.0)
     status_text.text("楽天市場API取得完了！")
+    
+    # 取得できなかった商品の理由をセッション状態に保存
+    st.session_state.not_found_reasons_rakuten = not_found_reasons
     
     return df_merged
 
@@ -444,6 +488,8 @@ def get_yahoo_data(sale_list):
 
     yahoo_item_codes = sale_list_mod['商品コード'].astype(str).unique()
     yahoo_items = []
+    # 取得できなかった商品とその理由を記録
+    not_found_reasons = {}
     
     # プログレスバー
     progress_bar = st.progress(0)
@@ -467,6 +513,7 @@ def get_yahoo_data(sale_list):
         max_retries = 3
         retry_count = 0
         success = False
+        found = False
         
         while retry_count < max_retries and not success:
             try:
@@ -477,6 +524,11 @@ def get_yahoo_data(sale_list):
                     wait_time = (retry_count + 1) * 5  # 5秒、10秒、15秒と段階的に延長
                     st.warning(f"API制限に達しました。{wait_time}秒待機します...")
                     time.sleep(wait_time)
+                    retry_count += 1
+                    continue
+                
+                if res.status_code != 200:
+                    not_found_reasons[code] = f"HTTPエラー: {res.status_code}"
                     retry_count += 1
                     continue
                 
@@ -523,8 +575,9 @@ def get_yahoo_data(sale_list):
                         "pointRate": selected_item.get("point", {}).get("times", ""),
                         "postageFlag": shipping_name,
                     })
+                    found = True
                 else:
-                    st.warning(f"商品コード: {code} でヒットなし")
+                    not_found_reasons[code] = "APIで商品が見つかりませんでした（ヒットなし）"
                 success = True
                 
             except requests.exceptions.HTTPError as e:
@@ -535,14 +588,24 @@ def get_yahoo_data(sale_list):
                     retry_count += 1
                     continue
                 else:
-                    st.error(f"Yahoo!商品取得エラー: {code} - {e}")
-                    break
+                    not_found_reasons[code] = f"HTTPエラー: {e.response.status_code}"
+                    retry_count += 1
+                    continue
+            except requests.exceptions.RequestException as e:
+                not_found_reasons[code] = f"リクエストエラー: {str(e)}"
+                retry_count += 1
+                continue
             except Exception as e:
-                st.error(f"Yahoo!商品取得エラー: {code} - {e}")
-                break
+                not_found_reasons[code] = f"エラー: {str(e)}"
+                retry_count += 1
+                continue
         
         if not success and retry_count >= max_retries:
-            st.error(f"商品コード: {code} の取得に失敗しました（最大リトライ回数に達しました）")
+            if code not in not_found_reasons:
+                not_found_reasons[code] = "最大リトライ回数に達しました"
+        
+        if not found and code not in not_found_reasons:
+            not_found_reasons[code] = "商品が見つかりませんでした"
         
         # API制限を考慮して待機（Yahoo!ショッピングAPI: 1分30リクエスト = 2秒間隔）
         time.sleep(2.1)
@@ -573,6 +636,9 @@ def get_yahoo_data(sale_list):
     # プログレスバーを完了
     progress_bar.progress(1.0)
     status_text.text("Yahoo!ショッピングAPI取得完了！")
+    
+    # 取得できなかった商品の理由をセッション状態に保存
+    st.session_state.not_found_reasons_yahoo = not_found_reasons
     
     return df_yahoo_merged
 
@@ -605,6 +671,8 @@ def render_sidebar():
                 # 他のデータソースの結果をクリア
                 st.session_state.df_rakuten = None
                 st.session_state.df_yahoo = None
+                st.session_state.not_found_reasons_rakuten = {}
+                st.session_state.not_found_reasons_yahoo = {}
                 # 選択されたデータソースを更新
                 st.session_state.selected_data_source = "自社サイトスクレイピング"
                 
@@ -622,6 +690,8 @@ def render_sidebar():
                 # 他のデータソースの結果をクリア
                 st.session_state.df_onlinestore = None
                 st.session_state.df_yahoo = None
+                st.session_state.not_found_reasons_onlinestore = {}
+                st.session_state.not_found_reasons_yahoo = {}
                 # 選択されたデータソースを更新
                 st.session_state.selected_data_source = "楽天市場API取得"
                 
@@ -640,6 +710,8 @@ def render_sidebar():
                 # 他のデータソースの結果をクリア
                 st.session_state.df_onlinestore = None
                 st.session_state.df_rakuten = None
+                st.session_state.not_found_reasons_onlinestore = {}
+                st.session_state.not_found_reasons_rakuten = {}
                 # 選択されたデータソースを更新
                 st.session_state.selected_data_source = "Yahoo!ショッピングAPI取得"
                 
@@ -694,12 +766,20 @@ def main():
             # 元のsale_listから取得できなかった商品を抽出
             not_found_df = st.session_state.sale_list[
                 ~st.session_state.sale_list['商品コード'].astype(str).isin(found_codes)
-            ]
+            ].copy()
             
             if not not_found_df.empty:
                 st.markdown("---")
                 st.subheader("❌ 取得できなかった商品")
                 st.warning(f"{len(not_found_df)}件の商品が取得できませんでした")
+                
+                # 理由を追加
+                if st.session_state.not_found_reasons_onlinestore:
+                    not_found_df['取得失敗理由'] = not_found_df['商品コード'].astype(str).map(
+                        lambda x: st.session_state.not_found_reasons_onlinestore.get(x, "理由不明")
+                    )
+                else:
+                    not_found_df['取得失敗理由'] = "理由不明"
                 
                 # 取得できなかった商品を表示
                 st.dataframe(
@@ -813,6 +893,35 @@ def main():
                 st.subheader("❌ 取得できなかった商品")
                 st.warning(f"{len(not_found_df)}件の商品が取得できませんでした")
                 
+                # 理由を追加（拡張コードから元の商品コードにマッピング）
+                if st.session_state.not_found_reasons_rakuten:
+                    def get_reason(row):
+                        code = str(row['商品コード']).strip()
+                        cat_code = row['大分類コード']
+                        reasons = []
+                        
+                        # 大分類コード1の場合は複数の拡張コードをチェック
+                        if cat_code == 1:
+                            for suffix in ['-50', '-100', '-200', '-300', '-400', '-500']:
+                                ext_code = code + suffix
+                                if ext_code in st.session_state.not_found_reasons_rakuten:
+                                    reasons.append(f"{ext_code}: {st.session_state.not_found_reasons_rakuten[ext_code]}")
+                        # 大分類コード2の場合は-50をチェック
+                        elif cat_code == 2:
+                            ext_code = code + '-50'
+                            if ext_code in st.session_state.not_found_reasons_rakuten:
+                                reasons.append(st.session_state.not_found_reasons_rakuten[ext_code])
+                        # その他の場合は元の商品コードをチェック
+                        else:
+                            if code in st.session_state.not_found_reasons_rakuten:
+                                reasons.append(st.session_state.not_found_reasons_rakuten[code])
+                        
+                        return "; ".join(reasons) if reasons else "理由不明"
+                    
+                    not_found_df['取得失敗理由'] = not_found_df.apply(get_reason, axis=1)
+                else:
+                    not_found_df['取得失敗理由'] = "理由不明"
+                
                 # 取得できなかった商品を表示
                 st.dataframe(
                     not_found_df,
@@ -925,6 +1034,35 @@ def main():
                 st.markdown("---")
                 st.subheader("❌ 取得できなかった商品")
                 st.warning(f"{len(not_found_df)}件の商品が取得できませんでした")
+                
+                # 理由を追加（拡張コードから元の商品コードにマッピング）
+                if st.session_state.not_found_reasons_yahoo:
+                    def get_reason(row):
+                        code = str(row['商品コード']).strip()
+                        cat_code = row['大分類コード']
+                        reasons = []
+                        
+                        # 大分類コード1の場合は複数の拡張コードをチェック
+                        if cat_code == 1:
+                            for suffix in ['-50', '-100', '-200', '-300', '-400', '-500']:
+                                ext_code = code + suffix
+                                if ext_code in st.session_state.not_found_reasons_yahoo:
+                                    reasons.append(f"{ext_code}: {st.session_state.not_found_reasons_yahoo[ext_code]}")
+                        # 大分類コード2の場合は-50をチェック
+                        elif cat_code == 2:
+                            ext_code = code + '-50'
+                            if ext_code in st.session_state.not_found_reasons_yahoo:
+                                reasons.append(st.session_state.not_found_reasons_yahoo[ext_code])
+                        # その他の場合は元の商品コードをチェック
+                        else:
+                            if code in st.session_state.not_found_reasons_yahoo:
+                                reasons.append(st.session_state.not_found_reasons_yahoo[code])
+                        
+                        return "; ".join(reasons) if reasons else "理由不明"
+                    
+                    not_found_df['取得失敗理由'] = not_found_df.apply(get_reason, axis=1)
+                else:
+                    not_found_df['取得失敗理由'] = "理由不明"
                 
                 # 取得できなかった商品を表示
                 st.dataframe(
