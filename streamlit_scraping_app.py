@@ -45,6 +45,27 @@ def load_csv_data_from_upload(uploaded_file):
     try:
         # ファイルを読み込み
         sale_list = pd.read_csv(uploaded_file)
+        
+        # 必須列のチェック
+        required_cols = ['商品コード', '通販単価', '送料区分名']
+        missing = [c for c in required_cols if c not in sale_list.columns]
+        if missing:
+            st.error(f"必須列が不足しています: {', '.join(missing)}")
+            return None
+        
+        # データの正規化（安定動作のため）
+        # 商品コード: 前後の空白を削除
+        sale_list['商品コード'] = sale_list['商品コード'].astype(str).str.strip()
+        # 大分類コード: 文字列"01"等を数値に変換（楽天・Yahoo APIの分類に必要）
+        if '大分類コード' in sale_list.columns:
+            sale_list['大分類コード'] = pd.to_numeric(
+                sale_list['大分類コード'].astype(str).str.strip(),
+                errors='coerce'
+            ).fillna(0).astype(int)
+        # 商品名: 前後の空白を削除（表示用）
+        if '商品名' in sale_list.columns:
+            sale_list['商品名'] = sale_list['商品名'].astype(str).str.strip()
+        
         st.session_state.sale_list = sale_list
         st.success(f"CSVファイルを読み込みました: {uploaded_file.name}")
         return sale_list
@@ -71,6 +92,8 @@ def scrape_own_site(sale_list):
     
     for idx, code in enumerate(sale_list['商品コード']):
         try:
+            # 商品コードの正規化（前後の空白を削除）
+            code = str(code).strip()
             # 進捗更新
             progress = (idx + 1) / total_items
             progress_bar.progress(progress)
