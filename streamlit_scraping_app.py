@@ -83,6 +83,18 @@ st.title("🔍 掲載内容チェック")
 st.caption("商品リストの値段と、サイト・モールに掲載されている内容を突き合わせます")
 
 
+def normalize_code(value):
+    """商品コードを文字列に揃える
+
+    空欄のある列は数値として読まれ、80401 が 80401.0 になることがある。
+    そのままURLや検索語に使うと商品が見つからなくなるため、末尾の .0 を落とす。
+    """
+    text = str(value).strip()
+    if text.endswith('.0'):
+        text = text[:-2]
+    return text
+
+
 def load_csv_data_from_upload(uploaded_file):
     """アップロードされた商品リストのCSVを読み込む"""
     try:
@@ -98,8 +110,20 @@ def load_csv_data_from_upload(uploaded_file):
     if '大分類コード' not in sale_list.columns:
         st.sidebar.warning("「大分類コード」列がないため、楽天市場とYahoo!ショッピングは取得できません。")
 
+    sale_list['商品コード'] = sale_list['商品コード'].apply(normalize_code)
+
     st.session_state.sale_list = sale_list
     return sale_list
+
+
+# 既定のままだと python からのアクセスとして弾かれることがあるため、ブラウザ相当の情報を送る
+BROWSER_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+    ),
+    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+}
 
 
 # 自社サイトスクレイピング関数
@@ -126,7 +150,7 @@ def scrape_own_site(sale_list):
             status_text.text(f"処理中: {idx + 1}/{total_items} - 商品コード: {code}")
             
             url = f'https://www.tonya.co.jp/shop/g/g{code}'
-            res = requests.get(url, timeout=30)
+            res = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
             
             # HTTPエラーチェック
             if res.status_code != 200:
@@ -227,6 +251,16 @@ def scrape_own_site(sale_list):
             not_found_reasons[str(code)] = f"エラー: {str(e)}"
             continue
 
+    # 列の順序を指定（通販単価、差額、送料区分名の順に）
+    column_order = ['No', 'Name', 'Price', 'Point', 'Stock', 'Icon', '通販単価', '差額', '送料区分名']
+
+    # 1件も取れなかったときは、空でも列だけ揃えて返す（この後の列参照で落ちないように）
+    if not onlinestore_data:
+        progress_bar.progress(1.0)
+        status_text.text("取得できた商品はありませんでした")
+        st.session_state.not_found_reasons_onlinestore = not_found_reasons
+        return pd.DataFrame(columns=column_order)
+
     # データフレーム化
     df_onlinestore = pd.DataFrame(onlinestore_data)
     
@@ -254,8 +288,6 @@ def scrape_own_site(sale_list):
 
     df_onlinestore['差額'] = df_onlinestore.apply(calc_diff, axis=1)
     
-    # 列の順序を指定（通販単価、差額、送料区分名の順に）
-    column_order = ['No', 'Name', 'Price', 'Point', 'Stock', 'Icon', '通販単価', '差額', '送料区分名']
     df_onlinestore = df_onlinestore[column_order]
     
     # プログレスバーを完了
