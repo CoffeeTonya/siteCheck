@@ -9,13 +9,51 @@ import re
 import os
 import datetime as dt
 
+try:
+    import tomllib  # Python 3.11 以降の標準ライブラリ
+except ModuleNotFoundError:
+    tomllib = None
+
 # ページ設定
 st.set_page_config(
-    page_title="商品データ取得ツール",
-    page_icon="📊",
+    page_title="掲載内容チェック",
+    page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+def load_local_secrets():
+    """このスクリプトと同じ場所にある .streamlit/secrets.toml を読む
+
+    st.secrets が探すのは起動時のカレントディレクトリ配下のため、
+    別の場所から streamlit run した場合でも設定を拾えるようにする。
+    """
+    if tomllib is None:
+        return {}
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.streamlit', 'secrets.toml')
+    try:
+        with open(path, 'rb') as f:
+            return tomllib.load(f)
+    except Exception:
+        return {}
+
+
+LOCAL_SECRETS = load_local_secrets()
+
+
+def get_setting(name, default=''):
+    """設定値を secrets.toml → 環境変数 の順に読む"""
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        # secrets.toml を置いていない環境では st.secrets の参照自体が例外になる
+        pass
+    if name in LOCAL_SECRETS:
+        return str(LOCAL_SECRETS[name])
+    return os.environ.get(name, default)
+
 
 # セッション状態の初期化
 if 'df_onlinestore' not in st.session_state:
@@ -26,50 +64,66 @@ if 'df_yahoo' not in st.session_state:
     st.session_state.df_yahoo = None
 if 'sale_list' not in st.session_state:
     st.session_state.sale_list = None
+if 'selected_data_source' not in st.session_state:
+    st.session_state.selected_data_source = 'onlinestore'
 if 'not_found_reasons_onlinestore' not in st.session_state:
     st.session_state.not_found_reasons_onlinestore = {}
 if 'not_found_reasons_rakuten' not in st.session_state:
     st.session_state.not_found_reasons_rakuten = {}
 if 'not_found_reasons_yahoo' not in st.session_state:
     st.session_state.not_found_reasons_yahoo = {}
+# 楽天ウェブサービスは 2026-05-14 の刷新で applicationId と accessKey の両方が必須になった
+if 'rakuten_app_id' not in st.session_state:
+    st.session_state.rakuten_app_id = get_setting('RAKUTEN_APP_ID')
+if 'rakuten_access_key' not in st.session_state:
+    st.session_state.rakuten_access_key = get_setting('RAKUTEN_ACCESS_KEY')
 
 # タイトル
-st.title("📊 商品データ取得ツール")
-st.markdown("---")
+st.title("🔍 掲載内容チェック")
+st.caption("商品リストの値段と、サイト・モールに掲載されている内容を突き合わせます")
 
-# CSVファイル読み込み機能
+
+def normalize_code(value):
+    """商品コードを文字列に揃える
+
+    空欄のある列は数値として読まれ、80401 が 80401.0 になることがある。
+    そのままURLや検索語に使うと商品が見つからなくなるため、末尾の .0 を落とす。
+    """
+    text = str(value).strip()
+    if text.endswith('.0'):
+        text = text[:-2]
+    return text
+
+
 def load_csv_data_from_upload(uploaded_file):
-    """アップロードされたCSVファイルを読み込む関数"""
+    """アップロードされた商品リストのCSVを読み込む"""
     try:
-        # ファイルを読み込み
         sale_list = pd.read_csv(uploaded_file)
-        
-        # 必須列のチェック
-        required_cols = ['商品コード', '通販単価', '送料区分名']
-        missing = [c for c in required_cols if c not in sale_list.columns]
-        if missing:
-            st.error(f"必須列が不足しています: {', '.join(missing)}")
-            return None
-        
-        # データの正規化（安定動作のため）
-        # 商品コード: 前後の空白を削除
-        sale_list['商品コード'] = sale_list['商品コード'].astype(str).str.strip()
-        # 大分類コード: 文字列"01"等を数値に変換（楽天・Yahoo APIの分類に必要）
-        if '大分類コード' in sale_list.columns:
-            sale_list['大分類コード'] = pd.to_numeric(
-                sale_list['大分類コード'].astype(str).str.strip(),
-                errors='coerce'
-            ).fillna(0).astype(int)
-        # 商品名: 前後の空白を削除（表示用）
-        if '商品名' in sale_list.columns:
-            sale_list['商品名'] = sale_list['商品名'].astype(str).str.strip()
-        
-        st.session_state.sale_list = sale_list
-        st.success(f"CSVファイルを読み込みました: {uploaded_file.name}")
-        return sale_list
     except Exception as e:
-        st.error(f"CSVファイルの読み込みに失敗しました: {e}")
+        st.sidebar.error(f"CSVを読み込めませんでした: {e}")
         return None
+
+    missing = [col for col in ['商品コード', '通販単価'] if col not in sale_list.columns]
+    if missing:
+        st.sidebar.error(f"リストに必要な列がありません: {'、'.join(missing)}")
+        return None
+    if '大分類コード' not in sale_list.columns:
+        st.sidebar.warning("「大分類コード」列がないため、楽天市場とYahoo!ショッピングは取得できません。")
+
+    sale_list['商品コード'] = sale_list['商品コード'].apply(normalize_code)
+
+    st.session_state.sale_list = sale_list
+    return sale_list
+
+
+# 既定のままだと python からのアクセスとして弾かれることがあるため、ブラウザ相当の情報を送る
+BROWSER_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+    ),
+    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+}
 
 
 # 自社サイトスクレイピング関数
@@ -90,15 +144,13 @@ def scrape_own_site(sale_list):
     
     for idx, code in enumerate(sale_list['商品コード']):
         try:
-            # 商品コードの正規化（前後の空白を削除）
-            code = str(code).strip()
             # 進捗更新
             progress = (idx + 1) / total_items
             progress_bar.progress(progress)
             status_text.text(f"処理中: {idx + 1}/{total_items} - 商品コード: {code}")
             
             url = f'https://www.tonya.co.jp/shop/g/g{code}'
-            res = requests.get(url)
+            res = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
             
             # HTTPエラーチェック
             if res.status_code != 200:
@@ -114,7 +166,6 @@ def scrape_own_site(sale_list):
                 'Price': None,
                 'Point': None,
                 'Stock': None,
-                '要確認': '',
                 'Icon': []
             }
 
@@ -181,17 +232,12 @@ def scrape_own_site(sale_list):
                     except:
                         item_dict['Point'] = None
 
-            # 在庫（◎ / ○ / △ / × など）
+            # 在庫
             stock_tr = soup.find('tr', class_='id_stock_msg_')
             if stock_tr:
                 stock_td = stock_tr.find('td', class_='id_txt')
                 if stock_td:
-                    item_dict['Stock'] = stock_td.get_text(strip=True)
-
-            # カートボタンあり＝カートが空いていない → 要確認
-            cart_btn = detail_div.find('input', class_=re.compile(r'btn_cart'))
-            if cart_btn:
-                item_dict['要確認'] = '要確認'
+                    item_dict['Stock'] = stock_td.text
 
             # 辞書をリストに追加
             onlinestore_data.append(item_dict)
@@ -205,39 +251,44 @@ def scrape_own_site(sale_list):
             not_found_reasons[str(code)] = f"エラー: {str(e)}"
             continue
 
+    # 列の順序を指定（通販単価、差額、送料区分名の順に）
+    column_order = ['No', 'Name', 'Price', 'Point', 'Stock', 'Icon', '通販単価', '差額', '送料区分名']
+
+    # 1件も取れなかったときは、空でも列だけ揃えて返す（この後の列参照で落ちないように）
+    if not onlinestore_data:
+        progress_bar.progress(1.0)
+        status_text.text("取得できた商品はありませんでした")
+        st.session_state.not_found_reasons_onlinestore = not_found_reasons
+        return pd.DataFrame(columns=column_order)
+
     # データフレーム化
-    column_order = ['No', 'Name', 'Price', 'Point', 'Stock', '要確認', 'Icon', '通販単価', '差額', '送料区分名']
     df_onlinestore = pd.DataFrame(onlinestore_data)
-    if df_onlinestore.empty:
-        df_onlinestore = pd.DataFrame(columns=column_order)
-    else:
-        # salelistの「商品コード」「通販単価」「送料区分名」をNoで紐づけ、差額列も追加
-        salelist_renamed = sale_list.rename(
-            columns={'商品コード': 'No', '通販単価': '通販単価', '送料区分名': '送料区分名'}
-        )
-        df_onlinestore['No'] = df_onlinestore['No'].astype(str)
-        salelist_renamed['No'] = salelist_renamed['No'].astype(str)
+    
+    # salelistの「商品コード」「通販単価」「送料区分名」をdf_onlinestoreにNoで紐づけて追加し、差額列も追加
+    salelist_renamed = sale_list.rename(columns={'商品コード': 'No', '通販単価': '通販単価', '送料区分名': '送料区分名'})
+    df_onlinestore['No'] = df_onlinestore['No'].astype(str)
+    salelist_renamed['No'] = salelist_renamed['No'].astype(str)
 
-        df_onlinestore = pd.merge(
-            df_onlinestore, salelist_renamed[['No', '通販単価', '送料区分名']], on='No', how='left'
-        )
+    # 通販単価と送料区分名を追加
+    df_onlinestore = pd.merge(df_onlinestore, salelist_renamed[['No', '通販単価', '送料区分名']], on='No', how='left')
 
-        df_onlinestore['通販単価'] = df_onlinestore['通販単価'].apply(
-            lambda x: f"{int(str(x).replace(',', '')):,}"
-            if pd.notnull(x) and str(x).replace(',', '').isdigit()
-            else x
-        )
+    # 通販単価もカンマ区切りの文字列に変換
+    df_onlinestore['通販単価'] = df_onlinestore['通販単価'].apply(
+        lambda x: f"{int(str(x).replace(',', '')):,}" if pd.notnull(x) and str(x).replace(',', '').isdigit() else x
+    )
 
-        def calc_diff(row):
-            try:
-                price = int(str(row['Price']).replace(',', ''))
-                sale = int(str(row['通販単価']).replace(',', ''))
-                return f"{price - sale:,}"
-            except Exception:
-                return None
+    # 差額列を追加（Price - 通販単価）
+    def calc_diff(row):
+        try:
+            price = int(str(row['Price']).replace(',', ''))
+            sale = int(str(row['通販単価']).replace(',', ''))
+            return f"{price - sale:,}"
+        except:
+            return None
 
-        df_onlinestore['差額'] = df_onlinestore.apply(calc_diff, axis=1)
-        df_onlinestore = df_onlinestore[column_order]
+    df_onlinestore['差額'] = df_onlinestore.apply(calc_diff, axis=1)
+    
+    df_onlinestore = df_onlinestore[column_order]
     
     # プログレスバーを完了
     progress_bar.progress(1.0)
@@ -251,10 +302,22 @@ def scrape_own_site(sale_list):
 # 楽天市場API取得関数
 def get_rakuten_data(sale_list):
     """楽天市場APIから商品情報を取得する関数"""
+    # 旧ドメイン app.rakuten.co.jp は 2026-05-14 に停止済み（アクセスすると 503 が返る）
+    REQUEST_URL = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701"
+    # 楽天アプリ登録時の「許可されたWebサイト」と一致しないと 403 で拒否される
+    ALLOWED_SITE = get_setting('RAKUTEN_ALLOWED_SITE', 'https://tonya.co.jp').rstrip('/')
+    # 画面で入力された値を優先し、無ければ secrets.toml や環境変数から読む
+    APP_ID = str(st.session_state.get('rakuten_app_id', '')).strip() or get_setting('RAKUTEN_APP_ID')
+    ACCESS_KEY = str(st.session_state.get('rakuten_access_key', '')).strip() or get_setting('RAKUTEN_ACCESS_KEY')
+
+    if not APP_ID or not ACCESS_KEY:
+        st.error(
+            "楽天のアプリID（applicationId）とアクセスキー（accessKey）が未設定です。"
+            "楽天ウェブサービスのダッシュボードでアプリを再登録し、サイドバーに入力してください。"
+        )
+        return None
+
     st.info("楽天市場APIからのデータ取得を開始します...")
-    
-    REQUEST_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706"
-    APP_ID = 1027604414937000350
 
     # 商品コード拡張
     cat1 = sale_list[sale_list['大分類コード'] == 1]
@@ -343,6 +406,8 @@ def get_rakuten_data(sale_list):
     status_text = st.empty()
     
     total_codes = len(codes)
+    # 認証エラーやメンテナンスが続くときに全件を待たずに打ち切るためのカウンタ
+    consecutive_http_errors = 0
     
     for idx, code in enumerate(codes):
         # 進捗更新
@@ -364,11 +429,25 @@ def get_rakuten_data(sale_list):
         }
         found = False
         try:
-            res = requests.get(REQUEST_URL, params=params)
+            headers = {
+                "accessKey": ACCESS_KEY,
+                "Origin": ALLOWED_SITE,
+                "Referer": ALLOWED_SITE + "/",
+            }
+            res = requests.get(REQUEST_URL, params=params, headers=headers, timeout=30)
             if res.status_code != 200:
-                not_found_reasons[code] = f"HTTPエラー: {res.status_code}"
+                detail = res.text[:200].replace('\n', ' ')
+                not_found_reasons[code] = f"HTTPエラー: {res.status_code} {detail}"
+                consecutive_http_errors += 1
+                if consecutive_http_errors >= 5:
+                    st.error(
+                        f"楽天APIが連続で失敗しました（HTTP {res.status_code}）。"
+                        "アプリID・アクセスキー、または楽天側の稼働状況を確認してください。処理を中断します。"
+                    )
+                    break
                 time.sleep(2.1)
                 continue
+            consecutive_http_errors = 0
             result = res.json()
         except requests.exceptions.RequestException as e:
             not_found_reasons[code] = f"リクエストエラー: {str(e)}"
@@ -379,20 +458,21 @@ def get_rakuten_data(sale_list):
             time.sleep(2.1)
             continue
         
-        for item in result.get('Items', []):
-            d = item['Item']
+        # 新旧バージョンでキー名（Items/items・Item/item）が異なる場合に備えて両方を受ける
+        raw_items = result.get('Items', result.get('items', []))
+        for item in raw_items:
+            d = item.get('Item', item.get('item', item)) if isinstance(item, dict) else {}
             url = d.get('itemUrl', '')
-            url = url.replace("https://item.rakuten.co.jp/tonya/", "").replace("/?rafcid=wsc_i_is_1027604414937000350", "")
-            if url == code:
-                # availability=1 で取得しているため、ヒットした商品は在庫あり扱い
+            # itemUrl 末尾のアフィリエイトパラメータはアプリごとに変わるため、店舗URL直後の商品コードだけを取り出す
+            m = re.search(r'item\.rakuten\.co\.jp/tonya/([^/?#]+)', url)
+            item_code = m.group(1) if m else ''
+            if item_code == code:
                 tmp = {
-                    'itemCode': url,
+                    'itemCode': item_code,
                     'itemName': d.get('itemName', ''),
                     'itemPrice': d.get('itemPrice', ''),
                     'pointRate': d.get('pointRate', ''),
-                    'postageFlag': "送料込" if d.get('postageFlag') == 0 else "送料別" if d.get('postageFlag') == 1 else "",
-                    'Stock': '在庫あり',
-                    '要確認': '要確認',
+                    'postageFlag': "送料込" if d.get('postageFlag') == 0 else "送料別" if d.get('postageFlag') == 1 else ""
                 }
                 item_list.append(tmp)
                 found = True
@@ -406,7 +486,7 @@ def get_rakuten_data(sale_list):
 
     df_rakuten = pd.DataFrame(item_list)
     if df_rakuten.empty:
-        df_rakuten = pd.DataFrame(columns=['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', 'Stock', '要確認'])
+        df_rakuten = pd.DataFrame(columns=['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag'])
 
     df_sales = sale_list_mod[['商品コード', '通販単価', '送料区分名']].rename(columns={'商品コード': 'itemCode'})
     df_merged = pd.merge(df_rakuten, df_sales, on='itemCode', how='left')
@@ -419,7 +499,7 @@ def get_rakuten_data(sale_list):
     df_merged['itemPrice'] = df_merged['itemPrice'].apply(lambda x: '{:,.0f}'.format(x) if not np.isnan(x) else '')
     df_merged['差額'] = df_merged['差額'].apply(lambda x: '{:,.0f}'.format(x) if not np.isnan(x) else '')
 
-    cols = ['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', 'Stock', '要確認', '通販単価', '差額', '送料区分名']
+    cols = ['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', '通販単価', '差額', '送料区分名']
     df_merged = df_merged[cols]
     
     # プログレスバーを完了
@@ -601,15 +681,12 @@ def get_yahoo_data(sale_list):
                     if "shipping" in selected_item and "name" in selected_item["shipping"]:
                         shipping_name = selected_item["shipping"]["name"]
                     
-                    in_stock = bool(selected_item.get("inStock", False))
                     yahoo_items.append({
                         "itemCode": code,
                         "itemName": selected_item.get("name", ""),
                         "itemPrice": selected_item.get("price", ""),
                         "pointRate": selected_item.get("point", {}).get("times", ""),
                         "postageFlag": shipping_name,
-                        "Stock": "在庫あり" if in_stock else "在庫なし",
-                        "要確認": "要確認" if in_stock else "",
                     })
                     found = True
                 else:
@@ -650,7 +727,7 @@ def get_yahoo_data(sale_list):
     df_yahoo = pd.DataFrame(yahoo_items)
     if df_yahoo.empty:
         st.warning("Yahoo!ショッピングAPIから商品情報が取得できませんでした。")
-        df_yahoo = pd.DataFrame(columns=['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', 'Stock', '要確認'])
+        df_yahoo = pd.DataFrame(columns=['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag'])
 
     # 楽天と同様に在庫データとマージ
     df_yahoo_sales = sale_list_mod[['商品コード', '通販単価', '送料区分名']].rename(columns={'商品コード': 'itemCode'})
@@ -666,7 +743,7 @@ def get_yahoo_data(sale_list):
     df_yahoo_merged['差額'] = df_yahoo_merged['差額'].apply(lambda x: '{:,.0f}'.format(x) if not np.isnan(x) else '')
 
     # カラム順を楽天と揃える
-    cols = ['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', 'Stock', '要確認', '通販単価', '差額', '送料区分名']
+    cols = ['itemCode', 'itemName', 'itemPrice', 'pointRate', 'postageFlag', '通販単価', '差額', '送料区分名']
     df_yahoo_merged = df_yahoo_merged[cols]
     
     # プログレスバーを完了
@@ -678,339 +755,420 @@ def get_yahoo_data(sale_list):
     
     return df_yahoo_merged
 
+# ---------------------------------------------------------------------------
+# 取得先ごとの設定と、リストとの突き合わせに使う共通処理
+# ---------------------------------------------------------------------------
 
-# ---------- 表示ヘルパー ----------
-def _filter_needs_review(df):
-    """要確認列が立っている行だけ返す"""
-    if df is None or df.empty or "要確認" not in df.columns:
-        return pd.DataFrame()
-    return df[df["要確認"].astype(str).str.strip() == "要確認"].copy()
+SOURCES = {
+    'onlinestore': {
+        'label': 'オンラインストア',
+        'icon': '🏪',
+        'df_key': 'df_onlinestore',
+        'reason_key': 'not_found_reasons_onlinestore',
+        'code_col': 'No',
+        'name_col': 'Name',
+        'price_col': 'Price',
+        'extended': False,
+        'button': '自社サイトを確認する',
+        'note': '商品ページを1件ずつ開いて、価格・ポイント・在庫を読み取ります。',
+    },
+    'rakuten': {
+        'label': '楽天市場',
+        'icon': '🛒',
+        'df_key': 'df_rakuten',
+        'reason_key': 'not_found_reasons_rakuten',
+        'code_col': 'itemCode',
+        'name_col': 'itemName',
+        'price_col': 'itemPrice',
+        'extended': True,
+        'button': '楽天市場を確認する',
+        'note': '楽天のAPIで検索します。1件あたり約2秒かかります。',
+    },
+    'yahoo': {
+        'label': 'Yahoo!ショッピング',
+        'icon': '🛍️',
+        'df_key': 'df_yahoo',
+        'reason_key': 'not_found_reasons_yahoo',
+        'code_col': 'itemCode',
+        'name_col': 'itemName',
+        'price_col': 'itemPrice',
+        'extended': True,
+        'button': 'Yahoo!ショッピングを確認する',
+        'note': 'Yahoo!のAPIで検索します。1件あたり約2秒かかります。',
+    },
+}
+
+# 画面に出すときの列名（データそのものの列名は変えない）
+COLUMN_LABELS = {
+    'No': '商品コード',
+    'itemCode': '商品コード',
+    'Name': '商品名',
+    'itemName': '商品名',
+    'Price': '掲載価格',
+    'itemPrice': '掲載価格',
+    '通販単価': 'リスト価格',
+    '差額': '差額',
+    'Point': 'ポイント',
+    'pointRate': 'ポイント倍率',
+    'Stock': '在庫',
+    'Icon': 'アイコン',
+    'postageFlag': '送料',
+    '送料区分名': '送料区分',
+}
 
 
-def _build_mall_not_found(df_items, not_found_reasons):
-    """楽天・Yahoo共通: 拡張コードを考慮して取得失敗商品を抽出（従来ロジック）"""
+def to_number(value):
+    """カンマ付きの文字列などを数値にする（数値にできなければ None）"""
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).replace(',', '').strip()
+    if text == '' or text.lower() == 'nan':
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def add_judgement(df, price_col):
+    """掲載価格とリストの通販単価を突き合わせ、判定列を先頭に付ける"""
+    if df is None or df.empty:
+        return df
+
+    def judge(row):
+        listed = to_number(row.get('通販単価'))
+        shown = to_number(row.get(price_col))
+        if shown is None:
+            return '価格を取得できず'
+        if listed is None:
+            return 'リストに価格なし'
+        return '一致' if abs(shown - listed) < 1 else '要確認'
+
+    judged = df.copy()
+    judged.insert(0, '判定', judged.apply(judge, axis=1))
+    return judged
+
+
+def collect_reasons(code, reasons, extended):
+    """取得できなかった理由を、枝番付きのコードも含めて集める"""
+    if code in reasons:
+        return reasons[code]
+    if extended:
+        details = [
+            f"{code}{suffix}: {reasons[code + suffix]}"
+            for suffix in ['-50', '-100', '-200', '-300', '-400', '-500']
+            if code + suffix in reasons
+        ]
+        if details:
+            return " / ".join(details)
+    return '理由不明'
+
+
+def build_not_found_df(source_key):
+    """リストにあって掲載側で見つからなかった商品を、理由付きで抜き出す"""
+    conf = SOURCES[source_key]
     sale_list = st.session_state.sale_list
-    if sale_list is None or df_items is None:
-        return pd.DataFrame()
+    df = st.session_state.get(conf['df_key'])
+    empty = pd.DataFrame(columns=['商品コード', '商品名', '取得失敗理由'])
+    if sale_list is None or df is None:
+        return empty
 
-    found_codes = {str(code).strip() for code in df_items["itemCode"].astype(str)}
+    reasons = st.session_state.get(conf['reason_key'], {})
+    found = {str(code).strip() for code in df[conf['code_col']].astype(str)} if not df.empty else set()
+    # 枝番（-100 など）を付けて取得する掲載先では、枝番を落とした元コードでも突き合わせる
+    found_base = {code.split('-')[0] for code in found}
 
-    cat1_codes = set()
-    cat2_codes = set()
-    base_code_extensions = {}
-    for code in found_codes:
-        if "-" in code:
-            base_code = code.split("-")[0].strip()
-            suffix = code.split("-", 1)[1].strip() if "-" in code else ""
-            if base_code not in base_code_extensions:
-                base_code_extensions[base_code] = set()
-            base_code_extensions[base_code].add(suffix)
-
-    # suffix は '50' / '100' 形式（itemCode を '-' で分割した右側）
-    for base_code, extensions in base_code_extensions.items():
-        if len(extensions) > 1 or (len(extensions) == 1 and "50" not in extensions):
-            cat1_codes.add(base_code)
-        elif len(extensions) == 1 and "50" in extensions:
-            matching_rows = sale_list[
-                sale_list["商品コード"].astype(str).str.strip() == base_code
-            ]
-            if not matching_rows.empty:
-                cat_code = matching_rows.iloc[0]["大分類コード"]
-                if cat_code == 2:
-                    cat2_codes.add(base_code)
-                else:
-                    cat1_codes.add(base_code)
-            else:
-                cat2_codes.add(base_code)
-
-    other_codes = {code for code in found_codes if "-" not in code}
-
-    not_found_list = []
+    rows = []
     for _, row in sale_list.iterrows():
-        code = str(row["商品コード"]).strip()
-        cat_code = row["大分類コード"]
-        if cat_code == 1:
-            if code not in cat1_codes:
-                not_found_list.append(row)
-        elif cat_code == 2:
-            if code not in cat2_codes:
-                not_found_list.append(row)
-        else:
-            if code not in other_codes:
-                not_found_list.append(row)
-
-    if not not_found_list:
-        return pd.DataFrame()
-
-    not_found_df = pd.DataFrame(not_found_list)
-
-    def get_reason(row):
-        code = str(row["商品コード"]).strip()
-        cat_code = row["大分類コード"]
-        reasons = []
-        if cat_code == 1:
-            for suffix in ["-50", "-100", "-200", "-300", "-400", "-500"]:
-                ext_code = code + suffix
-                if ext_code in not_found_reasons:
-                    reasons.append(f"{ext_code}: {not_found_reasons[ext_code]}")
-        elif cat_code == 2:
-            ext_code = code + "-50"
-            if ext_code in not_found_reasons:
-                reasons.append(not_found_reasons[ext_code])
-        else:
-            if code in not_found_reasons:
-                reasons.append(not_found_reasons[code])
-        return "; ".join(reasons) if reasons else "理由不明"
-
-    not_found_df["取得失敗理由"] = not_found_df.apply(get_reason, axis=1)
-    if "商品名" not in not_found_df.columns:
-        not_found_df["商品名"] = ""
-    return not_found_df[["商品コード", "商品名", "取得失敗理由"]].copy()
+        code = str(row['商品コード']).strip()
+        if code in found or (conf['extended'] and code in found_base):
+            continue
+        rows.append({
+            '商品コード': code,
+            '商品名': row.get('商品名', ''),
+            '取得失敗理由': collect_reasons(code, reasons, conf['extended']),
+        })
+    return pd.DataFrame(rows) if rows else empty
 
 
-def _render_not_found_block(not_found_display_df, site_label):
-    if not_found_display_df is None or not_found_display_df.empty:
+def clear_all_results():
+    """商品リストを入れ替えたときに、前のリストで取った結果を捨てる"""
+    for conf in SOURCES.values():
+        st.session_state[conf['df_key']] = None
+        st.session_state[conf['reason_key']] = {}
+
+
+# ---------------------------------------------------------------------------
+# サイドバー
+# ---------------------------------------------------------------------------
+
+def render_rakuten_credentials():
+    """楽天の認証情報（secrets.toml から読めていれば畳んでおく）
+
+    入力欄に key を付けると、楽天以外を選んでいる間に Streamlit が値を捨ててしまうため、
+    値の受け渡しは value と戻り値で行う。
+    """
+    app_id = str(st.session_state.get('rakuten_app_id', '')).strip()
+    access_key = str(st.session_state.get('rakuten_access_key', '')).strip()
+
+    if app_id and access_key:
+        with st.sidebar.expander("✅ 認証情報は設定済み"):
+            app_id = st.text_input("アプリID（applicationId）", value=app_id)
+            access_key = st.text_input("アクセスキー（accessKey）", value=access_key, type="password")
+            st.caption("恒久的に変えるときは .streamlit/secrets.toml を書き換えてください。")
+    else:
+        st.sidebar.warning("楽天の認証情報が未設定です")
+        app_id = st.sidebar.text_input("アプリID（applicationId）", value=app_id)
+        access_key = st.sidebar.text_input("アクセスキー（accessKey）", value=access_key, type="password")
+        st.sidebar.caption(".streamlit/secrets.toml に書いておくと、次回から自動で読み込まれます。")
+
+    st.session_state.rakuten_app_id = app_id
+    st.session_state.rakuten_access_key = access_key
+
+
+def render_sidebar():
+    """サイドバー：リストの読み込みから取得の実行まで"""
+    st.sidebar.subheader("① 商品リストを読み込む")
+    uploaded_file = st.sidebar.file_uploader(
+        "CSVファイル",
+        type=['csv'],
+        help="商品コード・商品名・通販単価・大分類コードが入ったリスト",
+    )
+    if uploaded_file is not None and st.session_state.get('uploaded_file_name') != uploaded_file.name:
+        if load_csv_data_from_upload(uploaded_file) is not None:
+            # リストを入れ替えたら、前のリストで取った結果は残さない
+            st.session_state.uploaded_file_name = uploaded_file.name
+            clear_all_results()
+            st.rerun()
+
+    sale_list = st.session_state.sale_list
+    if sale_list is None:
         return
-    st.markdown("---")
-    st.subheader("❌ 取得できなかった商品")
-    st.warning(f"{len(not_found_display_df)}件の商品が取得できませんでした")
-    st.dataframe(not_found_display_df, use_container_width=True, height=400)
-    st.download_button(
-        label="取得できなかった商品データをダウンロード",
-        data=not_found_display_df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"取得できなかった商品_{site_label}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        key=f"dl_not_found_{site_label}",
+
+    st.sidebar.success(f"リスト {len(sale_list):,} 件")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("② 突き合わせる掲載先")
+    source_key = st.sidebar.radio(
+        "掲載先",
+        list(SOURCES.keys()),
+        format_func=lambda key: f"{SOURCES[key]['icon']} {SOURCES[key]['label']}",
+        label_visibility='collapsed',
+    )
+    conf = SOURCES[source_key]
+    st.sidebar.caption(conf['note'])
+
+    if source_key == 'rakuten':
+        render_rakuten_credentials()
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("③ 実行")
+    if st.sidebar.button(conf['button'], type="primary", use_container_width=True):
+        runners = {
+            'onlinestore': scrape_own_site,
+            'rakuten': get_rakuten_data,
+            'yahoo': get_yahoo_data,
+        }
+        df_result = runners[source_key](sale_list)
+        # 認証情報が未設定のときは None が返るので、エラー表示を消さないよう再実行しない
+        if df_result is not None:
+            st.session_state[conf['df_key']] = df_result
+            st.session_state.selected_data_source = source_key
+            st.rerun()
+
+    if any(st.session_state.get(c['df_key']) is not None for c in SOURCES.values()):
+        if st.sidebar.button("取得結果を消す", use_container_width=True):
+            clear_all_results()
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# メイン画面
+# ---------------------------------------------------------------------------
+def build_column_config(df):
+    """表の見出しを日本語にする（データそのものの列名は変えない）"""
+    config = {}
+    for col, label in COLUMN_LABELS.items():
+        if col not in df.columns:
+            continue
+        config[col] = st.column_config.ListColumn(label) if col == 'Icon' \
+            else st.column_config.Column(label)
+    return config
+
+
+def style_by_judgement(df):
+    """判定に応じて行に色を付ける"""
+    colors = {
+        '一致': 'background-color: #edf7ed',
+        '要確認': 'background-color: #fdecea',
+    }
+
+    def paint(row):
+        return [colors.get(row['判定'], 'background-color: #fff8e1')] * len(row)
+
+    return df.style.apply(paint, axis=1)
+
+
+def render_result_table(judged, source_key):
+    """突き合わせ結果の絞り込みと表示"""
+    conf = SOURCES[source_key]
+
+    left, right = st.columns([2, 3])
+    with left:
+        view = st.radio(
+            "表示",
+            ['要確認のみ', 'すべて', '一致のみ'],
+            horizontal=True,
+            key=f"view_{source_key}",
+            label_visibility='collapsed',
+        )
+    with right:
+        keyword = st.text_input(
+            "絞り込み",
+            key=f"filter_{source_key}",
+            placeholder="商品コード・商品名で絞り込む",
+            label_visibility='collapsed',
+        )
+
+    view_df = judged
+    if view == '要確認のみ':
+        view_df = view_df[view_df['判定'] != '一致']
+    elif view == '一致のみ':
+        view_df = view_df[view_df['判定'] == '一致']
+
+    if keyword.strip():
+        haystack = view_df[conf['code_col']].astype(str) + ' ' + view_df[conf['name_col']].astype(str)
+        view_df = view_df[haystack.str.contains(keyword.strip(), case=False, na=False)]
+
+    if view_df.empty:
+        st.info("この条件に当てはまる商品はありません。")
+        return
+
+    st.caption(f"{len(view_df):,} 件を表示")
+    # 行数が多いと色付けが重くなるので、一定を超えたら色を付けずに出す
+    table = style_by_judgement(view_df) if len(view_df) <= 1000 else view_df
+    st.dataframe(
+        table,
+        use_container_width=True,
+        height=min(620, 80 + 35 * len(view_df)),
+        column_config=build_column_config(view_df),
+        hide_index=True,
     )
 
 
-def render_onlinestore_panel():
-    df = st.session_state.df_onlinestore
-    if df is None:
-        st.info("自社サイトのデータはまだありません。")
-        return
+def render_source_result(source_key):
+    """掲載先ごとの突き合わせ結果"""
+    conf = SOURCES[source_key]
+    df = st.session_state[conf['df_key']]
+    judged = add_judgement(df, conf['price_col'])
+    not_found_df = build_not_found_df(source_key)
+    stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    st.success(f"自社サイト: {len(df)}件取得済み")
-    needs = _filter_needs_review(df)
-    if not needs.empty:
-        st.warning(f"要確認（カートに入れられる状態）: {len(needs)}件")
-        st.dataframe(needs, use_container_width=True, height=360)
-        st.caption("↑ カートボタンがある商品。在庫記号（◎○△×）も併せて確認してください。")
+    if judged is None or judged.empty:
+        st.warning("掲載情報を1件も取得できませんでした。")
+        judged = pd.DataFrame(columns=['判定'])
 
-    st.subheader("全件")
-    st.dataframe(df, use_container_width=True, height=500)
+    counts = judged['判定'].value_counts()
+    matched = int(counts.get('一致', 0))
+    mismatched = int(counts.get('要確認', 0))
 
-    if st.session_state.sale_list is not None:
-        found_codes = set(df["No"].astype(str))
-        not_found_df = st.session_state.sale_list[
-            ~st.session_state.sale_list["商品コード"].astype(str).isin(found_codes)
-        ].copy()
-        if not not_found_df.empty:
-            if st.session_state.not_found_reasons_onlinestore:
-                not_found_df["取得失敗理由"] = not_found_df["商品コード"].astype(str).map(
-                    lambda x: st.session_state.not_found_reasons_onlinestore.get(x, "理由不明")
-                )
-            else:
-                not_found_df["取得失敗理由"] = "理由不明"
-            if "商品名" not in not_found_df.columns:
-                not_found_df["商品名"] = ""
-            _render_not_found_block(
-                not_found_df[["商品コード", "商品名", "取得失敗理由"]], "自社サイト"
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("リスト", f"{len(st.session_state.sale_list):,} 件")
+    col2.metric("価格が一致", f"{matched:,} 件")
+    col3.metric("要確認", f"{mismatched:,} 件")
+    col4.metric("掲載が見つからず", f"{len(not_found_df):,} 件")
+
+    if mismatched == 0 and not_found_df.empty and matched:
+        st.success(f"{conf['label']}の掲載内容はリストと一致しています。")
+    elif mismatched:
+        st.warning(f"リストと値段が違う商品が {mismatched:,} 件あります。")
+
+    tab_result, tab_missing = st.tabs([
+        f"突き合わせ結果（{len(judged):,}）",
+        f"掲載が見つからず（{len(not_found_df):,}）",
+    ])
+
+    with tab_result:
+        render_result_table(judged, source_key)
+        st.download_button(
+            "この結果をCSVでダウンロード",
+            data=judged.to_csv(index=False, encoding='utf-8-sig'),
+            file_name=f"突き合わせ結果_{conf['label']}_{stamp}.csv",
+            mime="text/csv",
+            key=f"dl_result_{source_key}",
+        )
+
+    with tab_missing:
+        if not_found_df.empty:
+            st.success("リストの商品はすべて掲載側で見つかりました。")
+        else:
+            st.dataframe(
+                not_found_df,
+                use_container_width=True,
+                height=min(500, 80 + 35 * len(not_found_df)),
+                hide_index=True,
+            )
+            st.download_button(
+                "見つからなかった商品をCSVでダウンロード",
+                data=not_found_df.to_csv(index=False, encoding='utf-8-sig'),
+                file_name=f"掲載が見つからず_{conf['label']}_{stamp}.csv",
+                mime="text/csv",
+                key=f"dl_missing_{source_key}",
             )
 
-    st.download_button(
-        label="自社サイトデータをダウンロード",
-        data=df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"自社サイトデータ_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        key="dl_onlinestore",
-    )
 
-
-def render_rakuten_panel():
-    df = st.session_state.df_rakuten
-    if df is None:
-        st.info("楽天市場のデータはまだありません。")
-        return
-
-    st.success(f"楽天市場: {len(df)}件取得済み")
-    needs = _filter_needs_review(df)
-    if not needs.empty:
-        st.warning(f"要確認（在庫あり）: {len(needs)}件")
-        st.dataframe(needs, use_container_width=True, height=360)
-
-    st.subheader("全件")
-    st.dataframe(df, use_container_width=True, height=500)
-    _render_not_found_block(
-        _build_mall_not_found(df, st.session_state.not_found_reasons_rakuten),
-        "楽天市場",
-    )
-    st.download_button(
-        label="楽天市場データをダウンロード",
-        data=df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"楽天市場データ_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        key="dl_rakuten",
-    )
-
-
-def render_yahoo_panel():
-    df = st.session_state.df_yahoo
-    if df is None:
-        st.info("Yahoo!ショッピングのデータはまだありません。")
-        return
-
-    st.success(f"Yahoo!ショッピング: {len(df)}件取得済み")
-    needs = _filter_needs_review(df)
-    if not needs.empty:
-        st.warning(f"要確認（在庫あり）: {len(needs)}件")
-        st.dataframe(needs, use_container_width=True, height=360)
-
-    st.subheader("全件")
-    st.dataframe(df, use_container_width=True, height=500)
-    _render_not_found_block(
-        _build_mall_not_found(df, st.session_state.not_found_reasons_yahoo),
-        "Yahoo!ショッピング",
-    )
-    st.download_button(
-        label="Yahoo!ショッピングデータをダウンロード",
-        data=df.to_csv(index=False, encoding="utf-8-sig"),
-        file_name=f"Yahoo!ショッピングデータ_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        key="dl_yahoo",
-    )
-
-
-def fetch_all_sites(sale_list):
-    """自社・楽天・Yahoo を順に取得（各サイトの既存ロジックを利用）"""
-    st.info("全サイトの一括取得を開始します（自社 → 楽天 → Yahoo の順）")
-    overall = st.progress(0)
-    overall_text = st.empty()
-
-    overall_text.text("1/3 自社サイトを取得中…")
-    overall.progress(0.05)
-    st.session_state.df_onlinestore = scrape_own_site(sale_list)
-    overall.progress(0.33)
-
-    overall_text.text("2/3 楽天市場APIを取得中…")
-    st.session_state.df_rakuten = get_rakuten_data(sale_list)
-    overall.progress(0.66)
-
-    overall_text.text("3/3 Yahoo!ショッピングAPIを取得中…")
-    st.session_state.df_yahoo = get_yahoo_data(sale_list)
-    overall.progress(1.0)
-    overall_text.text("全サイトの取得が完了しました")
-
-
-# サイドバー
-def render_sidebar():
-    """サイドバーの表示（全サイト一括取得）"""
-    if st.session_state.sale_list is None:
-        return
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔧 データ取得")
-    st.sidebar.markdown(
-        "1回の操作で **自社サイト・楽天・Yahoo** を順に取得します。\n\n"
-        "各サイトの取得方法は従来どおりです。\n\n"
-        "⚠️ 楽天・Yahoo は API 制限のため時間がかかります。"
-    )
-
-    if st.sidebar.button("全サイト一括取得", type="primary", use_container_width=True):
-        st.session_state.df_onlinestore = None
-        st.session_state.df_rakuten = None
-        st.session_state.df_yahoo = None
-        st.session_state.not_found_reasons_onlinestore = {}
-        st.session_state.not_found_reasons_rakuten = {}
-        st.session_state.not_found_reasons_yahoo = {}
-
-        fetch_all_sites(st.session_state.sale_list)
-        st.rerun()
-
-
-# メイン処理
-def main():
-    st.subheader("📁 CSVファイルアップロード")
-
-    uploaded_file = st.file_uploader(
-        "CSVファイルを選択してください",
-        type=["csv"],
-        help="商品データが含まれたCSVファイルをアップロードしてください",
-    )
-
-    if uploaded_file is not None:
-        sale_list = load_csv_data_from_upload(uploaded_file)
-        if sale_list is not None:
-            st.success(f"読み込み完了: {len(sale_list)}件の商品データ")
-            st.info("👈 サイドバーの「全サイト一括取得」を押してください")
-    else:
-        st.info("👆 CSVファイルをアップロードして、全サイトの商品データを取得しましょう")
-
-    render_sidebar()
-
-    has_any = (
-        st.session_state.df_onlinestore is not None
-        or st.session_state.df_rakuten is not None
-        or st.session_state.df_yahoo is not None
-    )
-
-    if has_any:
-        st.markdown("---")
-        st.subheader("📊 取得結果")
-
-        summary_cols = st.columns(3)
-        own_n = (
-            len(_filter_needs_review(st.session_state.df_onlinestore))
-            if st.session_state.df_onlinestore is not None
-            else 0
-        )
-        rak_n = (
-            len(_filter_needs_review(st.session_state.df_rakuten))
-            if st.session_state.df_rakuten is not None
-            else 0
-        )
-        yah_n = (
-            len(_filter_needs_review(st.session_state.df_yahoo))
-            if st.session_state.df_yahoo is not None
-            else 0
-        )
-        summary_cols[0].metric("自社・要確認", f"{own_n}件")
-        summary_cols[1].metric("楽天・要確認", f"{rak_n}件")
-        summary_cols[2].metric("Yahoo・要確認", f"{yah_n}件")
-        st.caption(
-            "要確認 = カートに入れられる／在庫ありの状態。"
-            "売切れ（カートなし・在庫なし）は対象外です。"
-        )
-
-        tab_own, tab_rakuten, tab_yahoo = st.tabs(
-            ["🏪 自社サイト", "🛒 楽天市場", "🛍️ Yahoo!ショッピング"]
-        )
-        with tab_own:
-            render_onlinestore_panel()
-        with tab_rakuten:
-            render_rakuten_panel()
-        with tab_yahoo:
-            render_yahoo_panel()
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 取得結果")
-    if st.session_state.df_onlinestore is not None:
-        st.sidebar.success(f"自社サイト: {len(st.session_state.df_onlinestore)}件")
-    if st.session_state.df_rakuten is not None:
-        st.sidebar.success(f"楽天市場: {len(st.session_state.df_rakuten)}件")
-    if st.session_state.df_yahoo is not None:
-        st.sidebar.success(f"Yahoo!: {len(st.session_state.df_yahoo)}件")
-
-    st.markdown("---")
+def render_welcome():
+    """リスト未読込のときの案内"""
+    st.info("まず左のサイドバーから、商品リストのCSVを読み込んでください。")
     st.markdown(
         """
-        <div style='text-align: center; color: #666;'>
-            <small>商品データ取得ツール v1.1 | 株式会社フレッシュロースター珈琲問屋</small>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        **このツールでできること**
+
+        商品リストの値段と、実際に掲載されている値段が合っているかを1件ずつ突き合わせます。
+        ページの入れ替え後に、値段が反映されているか・商品が消えていないかを確かめる用途を想定しています。
+
+        **使い方**
+
+        1. 商品リスト（CSV）を読み込む
+        2. 突き合わせたい掲載先を選ぶ（自社サイト・楽天市場・Yahoo!ショッピング）
+        3. 実行する。結果は掲載先ごとにタブで並び、値段が違うものだけを絞り込めます
+        """
     )
 
+
+def render_list_preview():
+    """読み込んだ商品リストの中身"""
+    with st.expander("読み込んだ商品リストを見る"):
+        st.dataframe(
+            st.session_state.sale_list,
+            use_container_width=True,
+            height=300,
+            hide_index=True,
+        )
+
+
+def main():
+    render_sidebar()
+
+    if st.session_state.sale_list is None:
+        render_welcome()
+        return
+
+    finished = [key for key in SOURCES if st.session_state.get(SOURCES[key]['df_key']) is not None]
+    if not finished:
+        st.info("サイドバーで掲載先を選び、「③ 実行」のボタンを押してください。")
+        render_list_preview()
+        return
+
+    tabs = st.tabs([f"{SOURCES[key]['icon']} {SOURCES[key]['label']}" for key in finished])
+    for tab, key in zip(tabs, finished):
+        with tab:
+            render_source_result(key)
+
+    render_list_preview()
+    st.caption("掲載内容チェック | 株式会社フレッシュロースター珈琲問屋")
 
 if __name__ == "__main__":
     main()
