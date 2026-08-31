@@ -232,12 +232,12 @@ def scrape_own_site(sale_list):
                     except:
                         item_dict['Point'] = None
 
-            # 在庫
+            # 在庫（◎ / ○ / △ / × など）
             stock_tr = soup.find('tr', class_='id_stock_msg_')
             if stock_tr:
                 stock_td = stock_tr.find('td', class_='id_txt')
                 if stock_td:
-                    item_dict['Stock'] = stock_td.text
+                    item_dict['Stock'] = stock_td.get_text(strip=True)
 
             # 辞書をリストに追加
             onlinestore_data.append(item_dict)
@@ -832,12 +832,21 @@ def to_number(value):
         return None
 
 
-def add_judgement(df, price_col):
-    """掲載価格とリストの通販単価を突き合わせ、判定列を先頭に付ける"""
+def add_judgement(df, price_col, check_stock_out=False):
+    """掲載価格とリストの通販単価を突き合わせ、判定列を先頭に付ける。
+
+    check_stock_out=True（自社サイト）のときは、在庫が × も要確認とする。
+    """
     if df is None or df.empty:
         return df
 
     def judge(row):
+        # 自社サイト: 在庫×は価格一致でも要確認
+        if check_stock_out:
+            stock = str(row.get('Stock') or '').strip()
+            if stock in ('×', 'x', 'X'):
+                return '要確認'
+
         listed = to_number(row.get('通販単価'))
         shown = to_number(row.get(price_col))
         if shown is None:
@@ -1062,7 +1071,11 @@ def render_source_result(source_key):
     """掲載先ごとの突き合わせ結果"""
     conf = SOURCES[source_key]
     df = st.session_state[conf['df_key']]
-    judged = add_judgement(df, conf['price_col'])
+    judged = add_judgement(
+        df,
+        conf['price_col'],
+        check_stock_out=(source_key == 'onlinestore'),
+    )
     not_found_df = build_not_found_df(source_key)
     stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -1083,7 +1096,13 @@ def render_source_result(source_key):
     if mismatched == 0 and not_found_df.empty and matched:
         st.success(f"{conf['label']}の掲載内容はリストと一致しています。")
     elif mismatched:
-        st.warning(f"リストと値段が違う商品が {mismatched:,} 件あります。")
+        if source_key == 'onlinestore':
+            st.warning(
+                f"要確認の商品が {mismatched:,} 件あります"
+                "（価格のずれ、または在庫×）。"
+            )
+        else:
+            st.warning(f"リストと値段が違う商品が {mismatched:,} 件あります。")
 
     tab_result, tab_missing = st.tabs([
         f"突き合わせ結果（{len(judged):,}）",
